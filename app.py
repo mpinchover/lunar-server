@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -56,8 +57,14 @@ def fetch_videos_in_index_range(db, min_idx: int, max_idx: int):
     return videos
 
 
+def count_videos(db) -> int:
+    result = db.collection("videos").count().get()
+    return result[0][0].value
+
+
 @app.route("/videos", methods=["GET"])
 def get_videos():
+    initial = request.args.get("initial", "").lower() == "true"
     last_raw = request.args.get("last_index")
     if last_raw is None or last_raw == "":
         last_index = None
@@ -68,6 +75,15 @@ def get_videos():
             return jsonify({"error": "last_index must be an integer"}), 400
 
     db = get_db()
+
+    if initial:
+        total = count_videos(db)
+        if total == 0:
+            return jsonify({"videos": [], "count": 0})
+        start = random.randint(0, max(0, total - 1))
+        end = start + PAGE_SIZE - 1
+        videos = fetch_videos_in_index_range(db, start, end)
+        return jsonify({"videos": videos, "count": len(videos)})
 
     if last_index is None:
         start, end = 0, PAGE_SIZE - 1
