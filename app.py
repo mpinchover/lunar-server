@@ -4,7 +4,10 @@ import random
 from pathlib import Path
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+import firebase_admin
+from firebase_admin import auth as firebase_auth
+from firebase_admin import credentials as firebase_credentials
+from flask import Flask, g, jsonify, request
 from flask_cors import CORS
 from google.cloud import firestore
 from google.cloud.firestore_v1 import FieldFilter
@@ -18,6 +21,20 @@ PAGE_SIZE = 20
 DEFAULT_GCP_PROJECT = "lunar-2b4b4"
 
 _db = None
+_firebase_initialized = False
+
+
+def init_firebase():
+    global _firebase_initialized
+    if _firebase_initialized:
+        return
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY")
+    if raw:
+        info = json.loads(raw)
+        firebase_admin.initialize_app(firebase_credentials.Certificate(info))
+    else:
+        firebase_admin.initialize_app()
+    _firebase_initialized = True
 
 
 def get_db():
@@ -62,6 +79,30 @@ def count_videos(db) -> int:
     return result[0][0].value
 
 
+def video_batch_no_auth(db):
+    videos = fetch_videos_in_index_range(db, 0, 19)
+    return jsonify({"videos": videos, "count": len(videos)})
+
+
+@app.before_request
+def parse_auth_jwt():
+    g.authenticated = False
+    g.uid = None
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return
+    token = auth_header[7:].strip()
+    if not token:
+        return
+    try:
+        init_firebase()
+        decoded = firebase_auth.verify_id_token(token)
+        g.authenticated = True
+        g.uid = decoded.get("uid")
+    except Exception:
+        pass
+
+
 @app.route("/videos", methods=["GET"])
 def get_videos():
     initial = request.args.get("initial", "").lower() == "true"
@@ -75,6 +116,9 @@ def get_videos():
             return jsonify({"error": "last_index must be an integer"}), 400
 
     db = get_db()
+
+    if not g.authenticated:
+        return video_batch_no_auth(db)
 
     if initial:
         total = count_videos(db)
